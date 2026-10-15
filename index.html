@@ -164,8 +164,20 @@ function populateDropdown() {
   });
 }
 
-const DEFAULT_IMAGE = 'https://images.unsplash.com/photo-1504711432869-efd597cdd045?auto=format&fit=crop&w=600&q=80';
+const DEFAULT_IMAGE = 'image/logo.png';
 let cachedArticles = [];
+
+function safeImageUrl(url) {
+  // Older cached entries may contain the previous remote fallback image.
+  // Keep those local too, so a failed fallback can never start an error loop.
+  if (!url || url.includes('images.unsplash.com/photo-1504711432869-efd597cdd045')) return DEFAULT_IMAGE;
+  return url;
+}
+
+function handleThumbError(image) {
+  image.onerror = null;
+  image.src = DEFAULT_IMAGE;
+}
 
 function matchesTopic(article, topic) {
   if (!topic) return true;
@@ -183,13 +195,13 @@ function renderNews(articles) {
   }
   articles.slice(0, 40).forEach(article => {
     const cleanTitle = article.title || 'News Update';
-    const imgUrl = article.image || DEFAULT_IMAGE;
+    const imgUrl = safeImageUrl(article.image);
     const sourceName = article.source || 'News Update';
     const link = article.link || '#';
     const card = document.createElement('div');
     card.className = 'news-card';
     card.innerHTML = `
-      <img src="${imgUrl}" alt="thumb" onerror="this.src='${DEFAULT_IMAGE}'">
+      <img src="${imgUrl}" alt="thumb" onerror="handleThumbError(this)">
       <span>${sourceName}</span>
       <h4>${cleanTitle}</h4>
       <div class="news-card-footer"><small style="color:var(--gray)">${article.published ? 'Live source' : ''}</small><a class="source-link" href="${link}" target="_blank" rel="noopener noreferrer">Source ↗</a></div>
@@ -205,8 +217,12 @@ async function fetchNews() {
   const select = document.getElementById('topicSelect');
   const topicQuery = select.value; 
   const topicName = select.options[select.selectedIndex].text;
-  
-  list.innerHTML = `<p style="padding: 20px; color: var(--gray); text-align: center;">Scanning live sources for<br><b style="color:var(--white); font-size:16px;">${topicName}</b>...</p>`;
+  const hadNewsCards = list.querySelector('.news-card');
+  // Keep the current cards in place while the next topic is prepared.
+  // Clearing this panel first caused the visible shutter/flicker on every change.
+  if (!hadNewsCards) {
+    list.innerHTML = `<p style="padding: 20px; color: var(--gray); text-align: center;">Scanning live sources for<br><b style="color:var(--white); font-size:16px;">${topicName}</b>...</p>`;
+  }
   
   try {
     // The scheduled GitHub Action fetches public RSS feeds and stores a local cache.
