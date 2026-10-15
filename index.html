@@ -191,6 +191,8 @@ let cachedArticles = [];
 let sourceStats = new Map();
 let activeSource = '';
 let failedFeeds = [];
+let sourceAttempts = new Map();
+let exhaustedFeeds = new Set();
 let retryTimer = null;
 let retryInProgress = false;
 let liveArticleMap = new Map();
@@ -265,7 +267,9 @@ function updateMonitor(total = cachedArticles.length) {
   const noteEl = document.getElementById('retryNote');
   if (totalEl) totalEl.textContent = `${total} news`;
   if (noteEl) noteEl.textContent = failedFeeds.length
-    ? `${failedFeeds.length} failed · retrying automatically`
+    ? `${failedFeeds.length} empty · retrying once (${exhaustedFeeds.size} stopped)`
+    : exhaustedFeeds.size
+      ? `${exhaustedFeeds.size} empty after 2 attempts · stopped`
     : 'All attempted sources active';
 }
 
@@ -425,26 +429,41 @@ async function retryFailedSources() {
   if (retryInProgress || !failedFeeds.length) return;
   retryInProgress = true;
   const pending = [...failedFeeds];
-  const recovered = new Set();
+  const stillPending = [];
   await Promise.all(pending.map(async ([source, url, kind]) => {
+    const key = feedStatKey(source, url);
+    const attempt = (sourceAttempts.get(key) || 0) + 1;
+    sourceAttempts.set(key, attempt);
     try {
       const items = await fetchFeed(source, url, kind);
-      sourceStats.set(feedStatKey(source, url), { source, url, ok: true, count: items.length });
-      recovered.add(url);
-      items.forEach(item => liveArticleMap.set(item.link, item));
-      cachedArticles = [...new Map([...cachedArticles, ...items].map(article => [article.link, article])).values()];
-      updateMonitor(cachedArticles.length);
-      const incoming = activeSource ? items.filter(article => article.source === activeSource) : items;
-      renderNews(incoming, true);
-      queueSourceChart();
+      if (items.length) {
+        sourceStats.set(key, { source, url, ok: true, count: items.length, attempts: attempt });
+        items.forEach(item => liveArticleMap.set(item.link, item));
+        cachedArticles = [...new Map([...cachedArticles, ...items].map(article => [article.link, article])).values()];
+        updateMonitor(cachedArticles.length);
+        const incoming = activeSource ? items.filter(article => article.source === activeSource) : items;
+        renderNews(incoming, true);
+      } else if (attempt < 2) {
+        sourceStats.set(key, { source, url, ok: false, count: 0, attempts: attempt });
+        stillPending.push([source, url, kind]);
+      } else {
+        exhaustedFeeds.add(key);
+        sourceStats.set(key, { source, url, ok: false, count: 0, attempts: attempt, exhausted: true });
+      }
     } catch (_) {
-      sourceStats.set(feedStatKey(source, url), { source, url, ok: false, count: 0 });
+      if (attempt < 2) {
+        sourceStats.set(key, { source, url, ok: false, count: 0, attempts: attempt });
+        stillPending.push([source, url, kind]);
+      } else {
+        exhaustedFeeds.add(key);
+        sourceStats.set(key, { source, url, ok: false, count: 0, attempts: attempt, exhausted: true });
+      }
     }
   }));
-  failedFeeds = failedFeeds.filter(([, url]) => !recovered.has(url));
+  failedFeeds = stillPending;
   retryInProgress = false;
   updateMonitor(cachedArticles.length);
-  renderSourceChart();
+  queueSourceChart();
   scheduleFailedRetry();
 }
 
@@ -463,6 +482,8 @@ async function fetchNews() {
   try {
     clearTimeout(retryTimer);
     failedFeeds = [];
+    sourceAttempts = new Map();
+    exhaustedFeeds = new Set();
     liveArticleMap = new Map();
     firstBatchRendered = false;
     const feeds = prioritizeFeeds([...ALL_RSS_FEEDS]);
@@ -484,17 +505,25 @@ async function fetchNews() {
       while (next < feeds.length) {
         const index = next++;
         const [source, url, kind] = feeds[index];
+        const key = feedStatKey(source, url);
+        sourceAttempts.set(key, 1);
         try {
           const items = await fetchFeed(source, url, kind);
-          items.forEach(item => partialLinks.add(item.link));
-          items.forEach(item => liveArticleMap.set(item.link, item));
-          succeeded++;
-          results[index] = { status: 'fulfilled', value: items };
-          sourceStats.set(feedStatKey(source, url), { source, url, ok: true, count: items.length });
+          if (items.length) {
+            items.forEach(item => partialLinks.add(item.link));
+            items.forEach(item => liveArticleMap.set(item.link, item));
+            succeeded++;
+            results[index] = { status: 'fulfilled', value: items };
+            sourceStats.set(key, { source, url, ok: true, count: items.length, attempts: 1 });
+          } else {
+            failedFeeds.push(feeds[index]);
+            results[index] = { status: 'fulfilled', value: [] };
+            sourceStats.set(key, { source, url, ok: false, count: 0, attempts: 1 });
+          }
         } catch (error) {
           failedFeeds.push(feeds[index]);
           results[index] = { status: 'rejected', reason: error };
-          sourceStats.set(feedStatKey(source, url), { source, url, ok: false, count: 0 });
+          sourceStats.set(key, { source, url, ok: false, count: 0, attempts: 1 });
         } finally {
           completed++;
           counter.textContent = `${succeeded}/${completed} fetched · ${feeds.length} total`;
