@@ -38,6 +38,16 @@ body{font-family:'Barlow Condensed',sans-serif;background:var(--bg);color:var(--
 .news-card-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px; }
 .source-link { color:var(--white); background:var(--red); border-radius:4px; padding:4px 8px; font-size:11px; font-weight:700; text-decoration:none; text-transform:uppercase; letter-spacing:.5px; }
 .source-link:hover { background:var(--redd); }
+.source-chart { margin-top:10px; max-height:150px; overflow-y:auto; border-top:1px solid var(--border); padding-top:8px; }
+.source-chart-title { color:var(--gray); font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px; }
+.source-row { display:flex; align-items:center; gap:5px; width:100%; border:0; background:transparent; color:var(--white); padding:3px 0; cursor:pointer; text-align:left; font-family:'Barlow Condensed'; font-size:12px; }
+.source-row:hover, .source-row.active { background:#1e1e1e; }
+.source-signal { width:8px; height:8px; border-radius:50%; flex:0 0 8px; background:var(--red); box-shadow:0 0 5px currentColor; }
+.source-signal.ok { background:#27c93f; color:#27c93f; }
+.source-name { width:84px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.source-bar { flex:1; height:5px; background:#252525; border-radius:5px; overflow:hidden; }
+.source-bar-fill { height:100%; background:var(--red); border-radius:5px; }
+.source-count { width:28px; color:var(--gray); text-align:right; }
 
 /* Center Canvas Area */
 .canvas-container { display: flex; justify-content: center; align-items: flex-start; overflow-y: auto; }
@@ -80,6 +90,9 @@ textarea{ resize:vertical; height:120px; font-size: 16px; }
         <button class="tab-btn" id="btn-world" onclick="setRegion('world')">WORLD</button>
       </div>
       <select id="topicSelect" class="topic-select" onchange="fetchNews()"></select>
+      <div class="source-chart" id="sourceChart">
+        <div class="source-chart-title">Source status · click a source to filter</div>
+      </div>
     </div>
 
     <div id="newsList">
@@ -167,6 +180,8 @@ function populateDropdown() {
 
 const DEFAULT_IMAGE = 'image/logo.png';
 let cachedArticles = [];
+let sourceStats = new Map();
+let activeSource = '';
 
 function safeImageUrl(url) {
   // Older cached entries may contain the previous remote fallback image.
@@ -185,6 +200,25 @@ function matchesTopic(article, topic) {
   const haystack = `${article.title} ${article.source}`.toLowerCase();
   const terms = topic.toLowerCase().replace(/&/g, 'and').split(/\s+/).filter(Boolean);
   return terms.some(term => term.length > 3 && haystack.includes(term));
+}
+
+function renderSourceChart() {
+  const chart = document.getElementById('sourceChart');
+  const stats = [...sourceStats.entries()].sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]));
+  const max = Math.max(1, ...stats.map(([, stat]) => stat.count));
+  chart.innerHTML = '<div class="source-chart-title">Source status · click a source to filter</div>';
+  const all = document.createElement('button');
+  all.className = `source-row${activeSource ? '' : ' active'}`;
+  all.innerHTML = `<span class="source-signal ok"></span><span class="source-name">All sources</span><span class="source-bar"><span class="source-bar-fill" style="width:100%"></span></span><span class="source-count">${cachedArticles.length}</span>`;
+  all.onclick = () => { activeSource = ''; renderNews(cachedArticles); renderSourceChart(); };
+  chart.appendChild(all);
+  stats.slice(0, 30).forEach(([source, stat]) => {
+    const row = document.createElement('button');
+    row.className = `source-row${activeSource === source ? ' active' : ''}`;
+    row.innerHTML = `<span class="source-signal${stat.ok ? ' ok' : ''}"></span><span class="source-name" title="${source}">${source}</span><span class="source-bar"><span class="source-bar-fill" style="width:${Math.max(4, stat.count / max * 100)}%"></span></span><span class="source-count">${stat.count}</span>`;
+    row.onclick = () => { activeSource = source; renderNews(cachedArticles.filter(article => article.source === source)); renderSourceChart(); };
+    chart.appendChild(row);
+  });
 }
 
 function renderNews(articles) {
@@ -304,22 +338,31 @@ async function fetchNews() {
     const counter = document.getElementById('sourceCounter');
     let completed = 0;
     let succeeded = 0;
+    sourceStats = new Map(feeds.map(([source]) => [source, { ok: false, count: 0 }]));
+    renderSourceChart();
     counter.textContent = `0/${feeds.length} sources`;
     const results = await Promise.all(feeds.map(([source, url]) => fetchFeed(source, url).then(items => {
       succeeded++;
       completed++;
+      sourceStats.set(source, { ok: true, count: items.length });
       counter.textContent = `${succeeded}/${completed} fetched · ${feeds.length} total`;
+      renderSourceChart();
       return { status: 'fulfilled', value: items };
     }).catch(error => {
       completed++;
+      sourceStats.set(source, { ok: false, count: 0 });
       counter.textContent = `${succeeded}/${completed} fetched · ${feeds.length} total`;
+      renderSourceChart();
       return { status: 'rejected', reason: error };
     })));
     cachedArticles = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
     const unique = [...new Map(cachedArticles.map(article => [article.link, article])).values()];
     if (!unique.length) throw new Error('all live feeds unavailable');
+    cachedArticles = unique;
     const topicArticles = unique.filter(article => matchesTopic(article, topicQuery));
-    renderNews(topicArticles.length ? topicArticles : unique);
+    const visibleArticles = topicArticles.length ? topicArticles : unique;
+    renderNews(activeSource ? cachedArticles.filter(article => article.source === activeSource) : visibleArticles);
+    renderSourceChart();
   } catch (e) {
     list.innerHTML = '<p style="padding: 20px; color: var(--red); text-align:center;">Unable to connect to live sources.<br><small>Try refresh again shortly.</small></p>';
   }
