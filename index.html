@@ -70,7 +70,7 @@ textarea{ resize:vertical; height:120px; font-size: 16px; }
   <!-- 1. LIVE FAST NEWS FEED -->
   <aside class="news-feed" id="fastNews">
     <div class="section-title" style="padding: 15px; margin: 0; border-bottom: none;">
-      <span>Fast News <span style="color:var(--white)">Live</span></span>
+      <span>Fast News <span style="color:var(--white)">Live</span> <small id="sourceCounter" style="color:var(--gray); font-size:11px; margin-left:6px;">0 sources</small></span>
       <button class="btn-refresh" onclick="fetchNews()">🔄 REFRESH</button>
     </div>
     
@@ -115,6 +115,7 @@ textarea{ resize:vertical; height:120px; font-size: 16px; }
 
 </div>
 
+<script src="feed-sources.js"></script>
 <script>
 // ─── 1. LOGO & CANVAS SETUP ──────────────────────────────────────────
 const LOGO_SRC = "image/logo.png";
@@ -166,29 +167,6 @@ function populateDropdown() {
 
 const DEFAULT_IMAGE = 'image/logo.png';
 let cachedArticles = [];
-
-const RSS_FEEDS = {
-  india: [
-    ['Google News India', 'https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en'],
-    ['BBC News', 'https://feeds.bbci.co.uk/news/world/asia/india/rss.xml'],
-    ['NDTV', 'https://feeds.feedburner.com/ndtvnews-top-stories'],
-    ['The Hindu', 'https://www.thehindu.com/news/national/feeder/default.rss'],
-    ['Indian Express', 'https://indianexpress.com/section/india/feed/'],
-    ['India Today', 'https://www.indiatoday.in/rss/home'],
-    ['Hindustan Times', 'https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml'],
-    ['The Guardian India', 'https://www.theguardian.com/world/india/rss']
-  ],
-  world: [
-    ['Google News World', 'https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en'],
-    ['BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'],
-    ['The Guardian World', 'https://www.theguardian.com/world/rss'],
-    ['Al Jazeera', 'https://www.aljazeera.com/xml/rss/all.xml'],
-    ['NPR World', 'https://feeds.npr.org/1004/rss.xml'],
-    ['DW World', 'https://rss.dw.com/rdf/rss-en-all'],
-    ['France 24', 'https://www.france24.com/en/rss'],
-    ['Sky News World', 'https://feeds.skynews.com/feeds/rss/world.xml']
-  ]
-};
 
 function safeImageUrl(url) {
   // Older cached entries may contain the previous remote fallback image.
@@ -318,12 +296,25 @@ async function fetchNews() {
   }
   
   try {
-    const feeds = [...RSS_FEEDS[currentRegion]];
+    const feeds = [...ALL_RSS_FEEDS];
     if (topicQuery) {
       const lang = currentRegion === 'india' ? 'en-IN&gl=IN&ceid=IN:en' : 'en-US&gl=US&ceid=US:en';
       feeds.unshift(['Topic search', `https://news.google.com/rss/search?q=${encodeURIComponent(topicQuery + (currentRegion === 'india' ? ' India' : ''))}&hl=${lang}`]);
     }
-    const results = await Promise.allSettled(feeds.map(([source, url]) => fetchFeed(source, url)));
+    const counter = document.getElementById('sourceCounter');
+    let completed = 0;
+    let succeeded = 0;
+    counter.textContent = `0/${feeds.length} sources`;
+    const results = await Promise.all(feeds.map(([source, url]) => fetchFeed(source, url).then(items => {
+      succeeded++;
+      completed++;
+      counter.textContent = `${succeeded}/${completed} fetched · ${feeds.length} total`;
+      return { status: 'fulfilled', value: items };
+    }).catch(error => {
+      completed++;
+      counter.textContent = `${succeeded}/${completed} fetched · ${feeds.length} total`;
+      return { status: 'rejected', reason: error };
+    })));
     cachedArticles = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
     const unique = [...new Map(cachedArticles.map(article => [article.link, article])).values()];
     if (!unique.length) throw new Error('all live feeds unavailable');
