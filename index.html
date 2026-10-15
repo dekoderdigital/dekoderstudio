@@ -263,7 +263,7 @@ function normalizeArticle(item, sourceName) {
   return { title, source, link: item.link, image: safeImageUrl(image), published: item.pubDate || item.published || '' };
 }
 
-async function fetchFeed(sourceName, feedUrl) {
+async function fetchFeed(sourceName, feedUrl, feedKind = 'rss') {
   const relayUrls = [
     feedUrl,
     `https://api.allorigins.win/raw?url=${encodeURIComponent(feedUrl)}`,
@@ -282,7 +282,10 @@ async function fetchFeed(sourceName, feedUrl) {
       if (requestUrl.includes('/get?')) {
         try { candidate = JSON.parse(text).contents || ''; } catch (_) { candidate = ''; }
       }
-      if (!/<(rss|feed|rdf:RDF)[\s>]/i.test(candidate.slice(0, 4000))) throw new Error('not RSS/XML');
+      const valid = feedKind === 'html'
+        ? /<(html|body|main|article|a)[\s>]/i.test(candidate.slice(0, 6000))
+        : /<(rss|feed|rdf:RDF)[\s>]/i.test(candidate.slice(0, 4000));
+      if (!valid) throw new Error(feedKind === 'html' ? 'not HTML' : 'not RSS/XML');
       return candidate;
     } finally {
       clearTimeout(timer);
@@ -295,6 +298,23 @@ async function fetchFeed(sourceName, feedUrl) {
     xml = await Promise.any(relayUrls.map(fetchRoute));
   } catch (_) {
     throw new Error(`${sourceName} feed unavailable`);
+  }
+  if (feedKind === 'html') {
+    const page = new DOMParser().parseFromString(xml, 'text/html');
+    const host = new URL(feedUrl).hostname.replace(/^www\./, '');
+    const anchors = [...page.querySelectorAll('a[href]')].map(anchor => {
+      try {
+        const url = new URL(anchor.href, feedUrl);
+        const title = (anchor.textContent || '').replace(/\s+/g, ' ').trim();
+        const allowedPath = /barandbench\.com/.test(host)
+          ? /\/(news|latest-legal-news)\//.test(url.pathname)
+          : /\/top-stories\//.test(url.pathname) || /\/(supreme-court|high-court|legal-news|news-updates)\//.test(url.pathname);
+        if (url.hostname.replace(/^www\./, '') !== host || !allowedPath || title.length < 25 || url.href === feedUrl) return null;
+        const image = anchor.closest('article,li,div')?.querySelector('img')?.src || '';
+        return normalizeArticle({ title, link: url.href, thumbnail: image }, sourceName);
+      } catch (_) { return null; }
+    }).filter(Boolean);
+    return [...new Map(anchors.map(article => [article.link, article])).values()].slice(0, 25);
   }
   const document = new DOMParser().parseFromString(xml, 'text/xml');
   if (document.querySelector('parsererror')) throw new Error(`${sourceName} feed unavailable`);
@@ -341,7 +361,7 @@ async function fetchNews() {
     sourceStats = new Map(feeds.map(([source]) => [source, { ok: false, count: 0 }]));
     renderSourceChart();
     counter.textContent = `0/${feeds.length} sources`;
-    const results = await Promise.all(feeds.map(([source, url]) => fetchFeed(source, url).then(items => {
+    const results = await Promise.all(feeds.map(([source, url, kind]) => fetchFeed(source, url, kind).then(items => {
       succeeded++;
       completed++;
       sourceStats.set(source, { ok: true, count: items.length });

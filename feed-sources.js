@@ -799,5 +799,29 @@ const ALL_RSS_FEEDS = [
   [
     "PC Gamer",
     "https://www.pcgamer.com/rss/"
+  ],
+  [
+    "Bar & Bench News",
+    "https://www.barandbench.com/news",
+    "html"
+  ],
+  [
+    "Bar & Bench Latest Legal News",
+    "https://www.barandbench.com/latest-legal-news",
+    "html"
+  ],
+  [
+    "LiveLaw",
+    "https://www.livelaw.in/",
+    "html"
+  ],
+  [
+    "LiveLaw Top Stories",
+    "https://www.livelaw.in/top-stories",
+    "html"
+  ],
+  [
+    "The Hindu National",
+    "https://www.thehindu.com/news/national/feeder/default.rss"
   ]
 ];
