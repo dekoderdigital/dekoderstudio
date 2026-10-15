@@ -245,12 +245,31 @@ function normalizeArticle(item, sourceName) {
 }
 
 async function fetchFeed(sourceName, feedUrl) {
-  const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feedUrl)}&count=20`;
+  // AllOrigins is a free CORS-enabled relay for public RSS/XML feeds.
+  // The browser parses the live XML; no local cache, API key, or backend is used.
+  const apiUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(feedUrl)}&ts=${Date.now()}`;
   const response = await fetch(apiUrl, { cache: 'no-store' });
   if (!response.ok) throw new Error(`${sourceName} returned ${response.status}`);
-  const data = await response.json();
-  if (data.status !== 'ok' || !Array.isArray(data.items)) throw new Error(`${sourceName} feed unavailable`);
-  return data.items.map(item => normalizeArticle(item, sourceName)).filter(article => article.link);
+  const xml = await response.text();
+  const document = new DOMParser().parseFromString(xml, 'text/xml');
+  if (document.querySelector('parsererror')) throw new Error(`${sourceName} feed unavailable`);
+  return [...document.querySelectorAll('item, entry')].slice(0, 25).map(item => {
+    const value = (...selectors) => {
+      for (const selector of selectors) {
+        const node = item.querySelector(selector);
+        if (node?.textContent?.trim()) return node.textContent.trim();
+      }
+      return '';
+    };
+    const linkNode = item.querySelector('link');
+    const link = linkNode?.getAttribute('href') || value('link');
+    const imageNode = item.querySelector('media\\:content, media\\:thumbnail, enclosure');
+    const image = imageNode?.getAttribute('url') || imageNode?.getAttribute('href') || '';
+    return normalizeArticle({
+      title: value('title'), link, description: value('description', 'summary', 'content'),
+      thumbnail: image, pubDate: value('pubDate', 'published', 'updated')
+    }, sourceName);
+  }).filter(article => article.link);
 }
 
 async function fetchNews() {
