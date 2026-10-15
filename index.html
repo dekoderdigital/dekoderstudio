@@ -173,13 +173,20 @@ const RSS_FEEDS = {
     ['BBC News', 'https://feeds.bbci.co.uk/news/world/asia/india/rss.xml'],
     ['NDTV', 'https://feeds.feedburner.com/ndtvnews-top-stories'],
     ['The Hindu', 'https://www.thehindu.com/news/national/feeder/default.rss'],
-    ['Indian Express', 'https://indianexpress.com/section/india/feed/']
+    ['Indian Express', 'https://indianexpress.com/section/india/feed/'],
+    ['India Today', 'https://www.indiatoday.in/rss/home'],
+    ['Hindustan Times', 'https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml'],
+    ['The Guardian India', 'https://www.theguardian.com/world/india/rss']
   ],
   world: [
     ['Google News World', 'https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en'],
     ['BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'],
     ['The Guardian World', 'https://www.theguardian.com/world/rss'],
-    ['Al Jazeera', 'https://www.aljazeera.com/xml/rss/all.xml']
+    ['Al Jazeera', 'https://www.aljazeera.com/xml/rss/all.xml'],
+    ['NPR World', 'https://feeds.npr.org/1004/rss.xml'],
+    ['DW World', 'https://rss.dw.com/rdf/rss-en-all'],
+    ['France 24', 'https://www.france24.com/en/rss'],
+    ['Sky News World', 'https://feeds.skynews.com/feeds/rss/world.xml']
   ]
 };
 
@@ -245,12 +252,35 @@ function normalizeArticle(item, sourceName) {
 }
 
 async function fetchFeed(sourceName, feedUrl) {
-  // AllOrigins is a free CORS-enabled relay for public RSS/XML feeds.
-  // The browser parses the live XML; no local cache, API key, or backend is used.
-  const apiUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(feedUrl)}&ts=${Date.now()}`;
-  const response = await fetch(apiUrl, { cache: 'no-store' });
-  if (!response.ok) throw new Error(`${sourceName} returned ${response.status}`);
-  const xml = await response.text();
+  const relayUrls = [
+    feedUrl,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(feedUrl)}`,
+    `https://api.allorigins.win/get?url=${encodeURIComponent(feedUrl)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(feedUrl)}`,
+    `https://corsproxy.io/?url=${encodeURIComponent(feedUrl)}`
+  ];
+  let xml = '';
+  for (const requestUrl of relayUrls) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), requestUrl === feedUrl ? 6000 : 10000);
+    try {
+      const response = await fetch(`${requestUrl}${requestUrl.includes('?') ? '&' : '?'}ts=${Date.now()}`, { cache: 'no-store', signal: controller.signal });
+      if (!response.ok) throw new Error(`${response.status}`);
+      const text = await response.text();
+      let candidate = text;
+      if (requestUrl.includes('/get?')) {
+        try { candidate = JSON.parse(text).contents || ''; } catch (_) { candidate = ''; }
+      }
+      if (!/<(rss|feed|rdf:RDF)[\s>]/i.test(candidate.slice(0, 4000))) throw new Error('not RSS/XML');
+      xml = candidate;
+      break;
+    } catch (_) {
+      // Try the next free route for this source.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (!xml) throw new Error(`${sourceName} feed unavailable`);
   const document = new DOMParser().parseFromString(xml, 'text/xml');
   if (document.querySelector('parsererror')) throw new Error(`${sourceName} feed unavailable`);
   return [...document.querySelectorAll('item, entry')].slice(0, 25).map(item => {
