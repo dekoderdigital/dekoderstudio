@@ -35,6 +35,9 @@ body{font-family:'Barlow Condensed',sans-serif;background:var(--bg);color:var(--
 .news-card img { width: 100%; height: 140px; object-fit: cover; border-radius: 6px; margin-bottom: 10px; }
 .news-card h4 { font-size: 17px; line-height: 1.2; color: var(--white); margin-top: 5px; }
 .news-card span { font-size: 12px; color: var(--red); text-transform: uppercase; font-weight: bold; }
+.news-card-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px; }
+.source-link { color:var(--white); background:var(--red); border-radius:4px; padding:4px 8px; font-size:11px; font-weight:700; text-decoration:none; text-transform:uppercase; letter-spacing:.5px; }
+.source-link:hover { background:var(--redd); }
 
 /* Center Canvas Area */
 .canvas-container { display: flex; justify-content: center; align-items: flex-start; overflow-y: auto; }
@@ -161,6 +164,42 @@ function populateDropdown() {
   });
 }
 
+const DEFAULT_IMAGE = 'https://images.unsplash.com/photo-1504711432869-efd597cdd045?auto=format&fit=crop&w=600&q=80';
+let cachedArticles = [];
+
+function matchesTopic(article, topic) {
+  if (!topic) return true;
+  const haystack = `${article.title} ${article.source}`.toLowerCase();
+  const terms = topic.toLowerCase().replace(/&/g, 'and').split(/\s+/).filter(Boolean);
+  return terms.some(term => term.length > 3 && haystack.includes(term));
+}
+
+function renderNews(articles) {
+  const list = document.getElementById('newsList');
+  list.innerHTML = '';
+  if (!articles.length) {
+    list.innerHTML = '<p style="padding:20px; text-align:center;">No recent news found for this topic.</p>';
+    return;
+  }
+  articles.slice(0, 40).forEach(article => {
+    const cleanTitle = article.title || 'News Update';
+    const imgUrl = article.image || DEFAULT_IMAGE;
+    const sourceName = article.source || 'News Update';
+    const link = article.link || '#';
+    const card = document.createElement('div');
+    card.className = 'news-card';
+    card.innerHTML = `
+      <img src="${imgUrl}" alt="thumb" onerror="this.src='${DEFAULT_IMAGE}'">
+      <span>${sourceName}</span>
+      <h4>${cleanTitle}</h4>
+      <div class="news-card-footer"><small style="color:var(--gray)">${article.published ? 'Live source' : ''}</small><a class="source-link" href="${link}" target="_blank" rel="noopener noreferrer">Source ↗</a></div>
+    `;
+    card.onclick = () => selectNews(cleanTitle, imgUrl);
+    card.querySelector('.source-link').onclick = event => event.stopPropagation();
+    list.appendChild(card);
+  });
+}
+
 async function fetchNews() {
   const list = document.getElementById('newsList');
   const select = document.getElementById('topicSelect');
@@ -169,61 +208,18 @@ async function fetchNews() {
   
   list.innerHTML = `<p style="padding: 20px; color: var(--gray); text-align: center;">Scanning live sources for<br><b style="color:var(--white); font-size:16px;">${topicName}</b>...</p>`;
   
-  // Build Google News RSS URL
-  let rssUrl = '';
-  if (currentRegion === 'india') {
-      if (topicQuery === '') rssUrl = 'https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en';
-      else rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(topicQuery + ' India')}&hl=en-IN&gl=IN&ceid=IN:en`;
-  } else {
-      if (topicQuery === '') rssUrl = 'https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en';
-      else rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(topicQuery)}&hl=en-US&gl=US&ceid=US:en`;
-  }
-
-  // Use RSS2JSON (Free service, no key needed for basic usage)
-  const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
-
   try {
-    const response = await fetch(apiUrl);
+    // The scheduled GitHub Action fetches public RSS feeds and stores a local cache.
+    // This avoids API keys, CORS failures, and dependence on one RSS-to-JSON service.
+    const response = await fetch(`data/news.json?ts=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`news cache returned ${response.status}`);
     const data = await response.json();
-    list.innerHTML = '';
-    
-    if(data.status !== 'ok' || !data.items || data.items.length === 0) {
-      list.innerHTML = '<p style="padding:20px; text-align:center;">No recent news found.</p>';
-      return;
-    }
-
-    data.items.forEach(art => {
-      // Clean title (Google News appends " - Publisher Name" at the end)
-      let cleanTitle = art.title;
-      let sourceName = "News Update";
-      if (cleanTitle.lastIndexOf(" - ") !== -1) {
-          sourceName = cleanTitle.substring(cleanTitle.lastIndexOf(" - ") + 3);
-          cleanTitle = cleanTitle.substring(0, cleanTitle.lastIndexOf(" - "));
-      }
-
-      // Extract image from RSS feed (Thumbnail, Enclosure, or regex from HTML content)
-      let imgUrl = art.thumbnail || (art.enclosure && art.enclosure.link) || '';
-      if (!imgUrl && art.description) {
-          const match = art.description.match(/<img[^>]+src="([^">]+)"/);
-          if (match) imgUrl = match[1];
-      }
-      
-      // Fallback image if the article has no picture at all
-      if (!imgUrl) imgUrl = 'https://images.unsplash.com/photo-1504711432869-efd597cdd045?auto=format&fit=crop&w=600&q=80';
-
-      const card = document.createElement('div');
-      card.className = 'news-card';
-      card.innerHTML = `
-        <img src="${imgUrl}" alt="thumb" onerror="this.src='https://images.unsplash.com/photo-1585829365295-ab7cd400c167?auto=format&fit=crop&w=600&q=80'">
-        <span>${sourceName}</span>
-        <h4>${cleanTitle}</h4>
-      `;
-      
-      card.onclick = () => selectNews(cleanTitle, imgUrl);
-      list.appendChild(card);
-    });
+    cachedArticles = Array.isArray(data.articles) ? data.articles : [];
+    const regionArticles = cachedArticles.filter(article => article.region === currentRegion.replace(/^./, char => char.toUpperCase()));
+    const topicArticles = regionArticles.filter(article => matchesTopic(article, topicQuery));
+    renderNews(topicArticles.length ? topicArticles : regionArticles);
   } catch (e) {
-    list.innerHTML = '<p style="padding: 20px; color: var(--red); text-align:center;">Error connecting to live feeds.</p>';
+    list.innerHTML = '<p style="padding: 20px; color: var(--red); text-align:center;">News cache is temporarily unavailable.<br><small>Try refresh again shortly.</small></p>';
   }
 }
 
