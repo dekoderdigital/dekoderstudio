@@ -165,8 +165,23 @@ function populateDropdown() {
 }
 
 const DEFAULT_IMAGE = 'image/logo.png';
-const MAX_CACHE_AGE_MS = 45 * 60 * 1000;
 let cachedArticles = [];
+
+const RSS_FEEDS = {
+  india: [
+    ['Google News India', 'https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en'],
+    ['BBC News', 'https://feeds.bbci.co.uk/news/world/asia/india/rss.xml'],
+    ['NDTV', 'https://feeds.feedburner.com/ndtvnews-top-stories'],
+    ['The Hindu', 'https://www.thehindu.com/news/national/feeder/default.rss'],
+    ['Indian Express', 'https://indianexpress.com/section/india/feed/']
+  ],
+  world: [
+    ['Google News World', 'https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en'],
+    ['BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'],
+    ['The Guardian World', 'https://www.theguardian.com/world/rss'],
+    ['Al Jazeera', 'https://www.aljazeera.com/xml/rss/all.xml']
+  ]
+};
 
 function safeImageUrl(url) {
   // Older cached entries may contain the previous remote fallback image.
@@ -213,6 +228,31 @@ function renderNews(articles) {
   });
 }
 
+function normalizeArticle(item, sourceName) {
+  let title = item.title || 'News Update';
+  let source = sourceName;
+  const separator = title.lastIndexOf(' - ');
+  if (separator > 0) {
+    const suffix = title.slice(separator + 3).trim();
+    if (suffix.length < 80) { source = suffix; title = title.slice(0, separator).trim(); }
+  }
+  let image = item.thumbnail || (item.enclosure && item.enclosure.link) || '';
+  if (!image && item.description) {
+    const match = item.description.match(/<img[^>]+src=["']([^"']+)/i);
+    if (match) image = match[1];
+  }
+  return { title, source, link: item.link, image: safeImageUrl(image), published: item.pubDate || item.published || '' };
+}
+
+async function fetchFeed(sourceName, feedUrl) {
+  const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feedUrl)}&count=20`;
+  const response = await fetch(apiUrl, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`${sourceName} returned ${response.status}`);
+  const data = await response.json();
+  if (data.status !== 'ok' || !Array.isArray(data.items)) throw new Error(`${sourceName} feed unavailable`);
+  return data.items.map(item => normalizeArticle(item, sourceName)).filter(article => article.link);
+}
+
 async function fetchNews() {
   const list = document.getElementById('newsList');
   const select = document.getElementById('topicSelect');
@@ -226,21 +266,19 @@ async function fetchNews() {
   }
   
   try {
-    // The scheduled GitHub Action fetches public RSS feeds and stores a local cache.
-    // This avoids API keys, CORS failures, and dependence on one RSS-to-JSON service.
-    const response = await fetch(`data/news.json?ts=${Date.now()}`, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`news cache returned ${response.status}`);
-    const data = await response.json();
-    const cacheTime = Date.parse(data.updatedAt || '');
-    if (!Number.isFinite(cacheTime) || Date.now() - cacheTime > MAX_CACHE_AGE_MS) {
-      throw new Error('news cache is stale');
+    const feeds = [...RSS_FEEDS[currentRegion]];
+    if (topicQuery) {
+      const lang = currentRegion === 'india' ? 'en-IN&gl=IN&ceid=IN:en' : 'en-US&gl=US&ceid=US:en';
+      feeds.unshift(['Topic search', `https://news.google.com/rss/search?q=${encodeURIComponent(topicQuery + (currentRegion === 'india' ? ' India' : ''))}&hl=${lang}`]);
     }
-    cachedArticles = Array.isArray(data.articles) ? data.articles : [];
-    const regionArticles = cachedArticles.filter(article => article.region === currentRegion.replace(/^./, char => char.toUpperCase()));
-    const topicArticles = regionArticles.filter(article => matchesTopic(article, topicQuery));
-    renderNews(topicArticles.length ? topicArticles : regionArticles);
+    const results = await Promise.allSettled(feeds.map(([source, url]) => fetchFeed(source, url)));
+    cachedArticles = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+    const unique = [...new Map(cachedArticles.map(article => [article.link, article])).values()];
+    if (!unique.length) throw new Error('all live feeds unavailable');
+    const topicArticles = unique.filter(article => matchesTopic(article, topicQuery));
+    renderNews(topicArticles.length ? topicArticles : unique);
   } catch (e) {
-    list.innerHTML = '<p style="padding: 20px; color: var(--red); text-align:center;">Live news is updating.<br><small>No old headlines are shown. Try refresh again shortly.</small></p>';
+    list.innerHTML = '<p style="padding: 20px; color: var(--red); text-align:center;">Unable to connect to live sources.<br><small>Try refresh again shortly.</small></p>';
   }
 }
 
