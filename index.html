@@ -38,7 +38,9 @@ body{font-family:'Barlow Condensed',sans-serif;background:var(--bg);color:var(--
 .news-card-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px; }
 .source-link { color:var(--white); background:var(--red); border-radius:4px; padding:4px 8px; font-size:11px; font-weight:700; text-decoration:none; text-transform:uppercase; letter-spacing:.5px; }
 .source-link:hover { background:var(--redd); }
-.source-chart { margin-top:10px; max-height:150px; overflow-y:auto; border-top:1px solid var(--border); padding-top:8px; }
+.source-chart { display:none; margin-top:8px; max-height:130px; overflow-y:auto; border-top:1px solid var(--border); padding-top:6px; }
+.source-monitor.expanded { flex-basis:220px; }
+.source-monitor.expanded .source-chart { display:block; }
 .source-chart-title { color:var(--gray); font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px; }
 .source-row { display:flex; align-items:center; gap:5px; width:100%; border:0; background:transparent; color:var(--white); padding:3px 0; cursor:pointer; text-align:left; font-family:'Barlow Condensed'; font-size:12px; }
 .source-row:hover, .source-row.active { background:#1e1e1e; }
@@ -48,7 +50,7 @@ body{font-family:'Barlow Condensed',sans-serif;background:var(--bg);color:var(--
 .source-bar { flex:1; height:5px; background:#252525; border-radius:5px; overflow:hidden; }
 .source-bar-fill { height:100%; background:var(--red); border-radius:5px; }
 .source-count { width:28px; color:var(--gray); text-align:right; }
-.source-monitor { flex:0 0 190px; border-top:1px solid var(--border); background:#0f0f0f; padding:10px 12px; overflow:hidden; }
+.source-monitor { flex:0 0 62px; border-top:1px solid var(--border); background:#0f0f0f; padding:8px 12px; overflow:hidden; }
 .monitor-summary { display:flex; justify-content:space-between; align-items:center; color:var(--gray); font-size:12px; margin-bottom:7px; }
 .monitor-summary strong { color:var(--white); font-size:15px; }
 .retry-note { color:var(--gray); font-size:10px; }
@@ -100,7 +102,7 @@ textarea{ resize:vertical; height:120px; font-size: 16px; }
       <p style="padding: 20px; color: var(--gray); text-align: center;">Loading fresh news...</p>
     </div>
     <section class="source-monitor" aria-label="Live source monitor">
-      <div class="monitor-summary"><span>Source monitor</span><strong id="totalNewsCount">0 news</strong></div>
+      <div class="monitor-summary"><span>Source monitor</span><strong id="totalNewsCount">0 news</strong><button class="btn-refresh" type="button" onclick="toggleSourceMonitor()">SOURCES</button></div>
       <div class="retry-note" id="retryNote">Waiting for source results…</div>
       <div class="source-chart" id="sourceChart"><div class="source-chart-title">Red failed · green active · click to filter</div></div>
     </section>
@@ -229,19 +231,33 @@ function renderSourceChart() {
   const chart = document.getElementById('sourceChart');
   const stats = [...sourceStats.entries()].sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]));
   const max = Math.max(1, ...stats.map(([, stat]) => stat.count));
-  chart.innerHTML = '<div class="source-chart-title">Source status · click a source to filter</div>';
+  chart.innerHTML = `<div class="source-chart-title">${stats.length} feeds · red failed · green active · click to filter</div>`;
   const all = document.createElement('button');
   all.className = `source-row${activeSource ? '' : ' active'}`;
   all.innerHTML = `<span class="source-signal ok"></span><span class="source-name">All sources</span><span class="source-bar"><span class="source-bar-fill" style="width:100%"></span></span><span class="source-count">${cachedArticles.length}</span>`;
   all.onclick = () => { activeSource = ''; renderNews(cachedArticles); renderSourceChart(); };
   chart.appendChild(all);
-  stats.slice(0, 30).forEach(([source, stat]) => {
+  stats.forEach(([key, stat]) => {
     const row = document.createElement('button');
-    row.className = `source-row${activeSource === source ? ' active' : ''}`;
-    row.innerHTML = `<span class="source-signal${stat.ok ? ' ok' : ''}"></span><span class="source-name" title="${source}">${source}</span><span class="source-bar"><span class="source-bar-fill" style="width:${Math.max(4, stat.count / max * 100)}%"></span></span><span class="source-count">${stat.count}</span>`;
-    row.onclick = () => { activeSource = source; renderNews(cachedArticles.filter(article => article.source === source)); renderSourceChart(); };
+    row.className = `source-row${activeSource === stat.source ? ' active' : ''}`;
+    row.innerHTML = `<span class="source-signal${stat.ok ? ' ok' : ''}"></span><span class="source-name" title="${stat.url}">${key}</span><span class="source-bar"><span class="source-bar-fill" style="width:${Math.max(4, stat.count / max * 100)}%"></span></span><span class="source-count">${stat.count}</span>`;
+    row.onclick = () => { activeSource = stat.source; renderNews(cachedArticles.filter(article => article.source === stat.source)); renderSourceChart(); };
     chart.appendChild(row);
   });
+}
+
+function feedStatKey(source, url) {
+  try {
+    const parsed = new URL(url, location.href);
+    const path = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/').slice(0, 2).join('/');
+    return `${source} · ${parsed.hostname}${path ? `/${path}` : ''}`;
+  } catch (_) {
+    return `${source} · ${url}`;
+  }
+}
+
+function toggleSourceMonitor() {
+  document.querySelector('.source-monitor').classList.toggle('expanded');
 }
 
 function updateMonitor(total = cachedArticles.length) {
@@ -413,7 +429,7 @@ async function retryFailedSources() {
   await Promise.all(pending.map(async ([source, url, kind]) => {
     try {
       const items = await fetchFeed(source, url, kind);
-      sourceStats.set(source, { ok: true, count: items.length });
+      sourceStats.set(feedStatKey(source, url), { source, url, ok: true, count: items.length });
       recovered.add(url);
       items.forEach(item => liveArticleMap.set(item.link, item));
       cachedArticles = [...new Map([...cachedArticles, ...items].map(article => [article.link, article])).values()];
@@ -422,7 +438,7 @@ async function retryFailedSources() {
       renderNews(incoming, true);
       queueSourceChart();
     } catch (_) {
-      sourceStats.set(source, { ok: false, count: 0 });
+      sourceStats.set(feedStatKey(source, url), { source, url, ok: false, count: 0 });
     }
   }));
   failedFeeds = failedFeeds.filter(([, url]) => !recovered.has(url));
@@ -458,7 +474,7 @@ async function fetchNews() {
     let completed = 0;
     let succeeded = 0;
     const partialLinks = new Set();
-    sourceStats = new Map(feeds.map(([source]) => [source, { ok: false, count: 0 }]));
+    sourceStats = new Map(feeds.map(([source, url]) => [feedStatKey(source, url), { source, url, ok: false, count: 0 }]));
     queueSourceChart();
     updateMonitor(0);
     counter.textContent = `0/${feeds.length} sources`;
@@ -474,11 +490,11 @@ async function fetchNews() {
           items.forEach(item => liveArticleMap.set(item.link, item));
           succeeded++;
           results[index] = { status: 'fulfilled', value: items };
-          sourceStats.set(source, { ok: true, count: items.length });
+          sourceStats.set(feedStatKey(source, url), { source, url, ok: true, count: items.length });
         } catch (error) {
           failedFeeds.push(feeds[index]);
           results[index] = { status: 'rejected', reason: error };
-          sourceStats.set(source, { ok: false, count: 0 });
+          sourceStats.set(feedStatKey(source, url), { source, url, ok: false, count: 0 });
         } finally {
           completed++;
           counter.textContent = `${succeeded}/${completed} fetched · ${feeds.length} total`;
