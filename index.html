@@ -259,8 +259,7 @@ async function fetchFeed(sourceName, feedUrl) {
     `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(feedUrl)}`,
     `https://corsproxy.io/?url=${encodeURIComponent(feedUrl)}`
   ];
-  let xml = '';
-  for (const requestUrl of relayUrls) {
+  const fetchRoute = async requestUrl => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), requestUrl === feedUrl ? 6000 : 10000);
     try {
@@ -272,15 +271,19 @@ async function fetchFeed(sourceName, feedUrl) {
         try { candidate = JSON.parse(text).contents || ''; } catch (_) { candidate = ''; }
       }
       if (!/<(rss|feed|rdf:RDF)[\s>]/i.test(candidate.slice(0, 4000))) throw new Error('not RSS/XML');
-      xml = candidate;
-      break;
-    } catch (_) {
-      // Try the next free route for this source.
+      return candidate;
     } finally {
       clearTimeout(timer);
     }
+  };
+  let xml;
+  try {
+    // Race the free routes: the first healthy route wins, so a blocked relay
+    // cannot hold up every other source in the news panel.
+    xml = await Promise.any(relayUrls.map(fetchRoute));
+  } catch (_) {
+    throw new Error(`${sourceName} feed unavailable`);
   }
-  if (!xml) throw new Error(`${sourceName} feed unavailable`);
   const document = new DOMParser().parseFromString(xml, 'text/xml');
   if (document.querySelector('parsererror')) throw new Error(`${sourceName} feed unavailable`);
   return [...document.querySelectorAll('item, entry')].slice(0, 25).map(item => {
